@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Net;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace WordCountServer
 {
@@ -12,7 +13,7 @@ namespace WordCountServer
         private FileSearcher _fileSearcher;
         private RequestQueue _requestQueue;
         private Cache _cache;
-        private int _workerCount = 4;       
+        private int _workerCount = 4;
 
         public Server(string prefix, string rootFolder)
         {
@@ -33,10 +34,10 @@ namespace WordCountServer
             for (int i = 0; i < _workerCount; i++)
             {
                 int workerId = i;
-                ThreadPool.QueueUserWorkItem(_ => WorkerLoop(workerId));
+                Task.Run(() => WorkerLoop(workerId));
             }
 
-            Logger.Info($"pokrenuto {_workerCount} worker niti");
+            Logger.Info($"pokrenuto {_workerCount} worker taskova");
 
             while (_running)
             {
@@ -45,7 +46,7 @@ namespace WordCountServer
             }
         }
 
-        private void WorkerLoop(int workerId)
+        private async Task WorkerLoop(int workerId)
         {
             Logger.Info($"worker {workerId} spreman");
 
@@ -65,13 +66,14 @@ namespace WordCountServer
 
                 try
                 {
-                    Thread.Sleep(1000); //simulira sporu obradu
                     Logger.Info($"worker {workerId} obradjuje: {fileName}");
-                    string response = ProcessRequest(fileName);
+
+                    string response = await ProcessRequestAsync(fileName);
+
                     SendResponse(context, response);
                     Logger.Info($"worker {workerId} zavrsio: {fileName}");
                 }
-                catch (Exception ex) 
+                catch (Exception ex)
                 {
                     Logger.Error($"worker {workerId} greska pri obradi '{fileName}': {ex.Message}");
                     try
@@ -80,14 +82,13 @@ namespace WordCountServer
                     }
                     catch
                     {
-                        //ako ni slanje odgovora ne uspe samo nastavimo dalje
+                        // ako ni slanje odgovora ne uspe, nastavljamo dalje
                     }
                 }
-       
             }
         }
 
-        private string ProcessRequest(string fileName)
+        private async Task<string> ProcessRequestAsync(string fileName)
         {
             if (string.IsNullOrWhiteSpace(fileName))
                 return "greska! nije naveden naziv fajla";
@@ -101,9 +102,7 @@ namespace WordCountServer
                 return $"fajl: {fileName}\nbroj reci (iz kesa): {cachedResult}";
             }
 
-            
-
-            string fullPath = _fileSearcher.FindFile(fileName);
+            string fullPath = await _fileSearcher.FindFileAsync(fileName);
 
             if (fullPath == null)
             {
@@ -111,11 +110,9 @@ namespace WordCountServer
                 return $"greska! fajl '{fileName}' nije pronadjen";
             }
 
-            //Thread.Sleep(3000); // odkomentarisi za testiranje cache stampede
+            string content = await _fileSearcher.ReadFileAsync(fullPath);
 
-            string content = _fileSearcher.ReadFile(fullPath);
             int count = WordCounter.CountWords(content);
-
             _cache.Set(fileName, count);
 
             if (count == 0)
