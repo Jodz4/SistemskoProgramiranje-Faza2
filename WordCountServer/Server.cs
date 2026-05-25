@@ -15,6 +15,11 @@ namespace WordCountServer
         private Cache _cache;
         private int _workerCount = 4;
 
+        // SemaphoreSlim kontrolise koliko taskova istovremeno obradjuje zahteve
+        // prvi parametar  = pocetni broj slobodnih mesta
+        // drugi parametar = maksimalni broj slobodnih mesta
+        private SemaphoreSlim _semaphore;
+
         public Server(string prefix, string rootFolder)
         {
             _prefix = prefix;
@@ -23,6 +28,9 @@ namespace WordCountServer
             _fileSearcher = new FileSearcher(rootFolder);
             _requestQueue = new RequestQueue(10);
             _cache = new Cache(5);
+
+            // Maksimalno _workerCount taskova istovremeno
+            _semaphore = new SemaphoreSlim(_workerCount, _workerCount);
         }
 
         public void Start()
@@ -64,6 +72,10 @@ namespace WordCountServer
                     continue;
                 }
 
+                // Cekamo dok se ne oslobodi mesto - neblokirajuce!
+                // WaitAsync oslobadja nit dok ceka, za razliku od Wait()
+                await _semaphore.WaitAsync();
+
                 try
                 {
                     Logger.Info($"worker {workerId} obradjuje: {fileName}");
@@ -85,40 +97,67 @@ namespace WordCountServer
                         // ako ni slanje odgovora ne uspe, nastavljamo dalje
                     }
                 }
+                finally
+                {
+                    // finally garantuje da se mesto UVEK oslobodi
+                    // cak i ako dodje do greske
+                    _semaphore.Release();
+                    Logger.Info($"worker {workerId} oslobodio semaphore");
+                }
             }
         }
 
-        private async Task<string> ProcessRequestAsync(string fileName)
+        private Task<string> ProcessRequestAsync(string fileName)
         {
             if (string.IsNullOrWhiteSpace(fileName))
-                return "greska! nije naveden naziv fajla";
+                return Task.FromResult("greska! nije naveden naziv fajla");
 
             if (_cache.TryGetOrReserve(fileName, out int cachedResult))
             {
                 if (cachedResult == -1)
-                    return $"greska! fajl '{fileName}' nije pronadjen";
+                    return Task.FromResult($"greska! fajl '{fileName}' nije pronadjen");
                 if (cachedResult == 0)
-                    return $"fajl '{fileName}' ne sadrzi reci sa vise suglasnika nego samoglasnika";
-                return $"fajl: {fileName}\nbroj reci (iz kesa): {cachedResult}";
+                    return Task.FromResult($"fajl '{fileName}' ne sadrzi reci sa vise suglasnika nego samoglasnika");
+                return Task.FromResult($"fajl: {fileName}\nbroj reci (iz kesa): {cachedResult}");
             }
 
-            string fullPath = await _fileSearcher.FindFileAsync(fileName);
+            return _fileSearcher.FindFileAsync(fileName)
+                .ContinueWith(findTask =>
+                {
+                    string fullPath = findTask.Result;
 
-            if (fullPath == null)
-            {
-                _cache.Set(fileName, -1);
-                return $"greska! fajl '{fileName}' nije pronadjen";
-            }
+                    if (fullPath == null)
+                    {
+                        _cache.Set(fileName, -1);
+                        return Task.FromResult("__NOT_FOUND__");
+                    }
 
-            string content = await _fileSearcher.ReadFileAsync(fullPath);
+                    return _fileSearcher.ReadFileAsync(fullPath)
+                        .ContinueWith(readTask =>
+                        {
+                            string content = readTask.Result;
+                            int count = WordCounter.CountWords(content);
+                            _cache.Set(fileName, count);
+                            return $"{fullPath}|{count}";
+                        });
+                })
+                .Unwrap()
+                .ContinueWith(resultTask =>
+                {
+                    string result = resultTask.Result;
 
-            int count = WordCounter.CountWords(content);
-            _cache.Set(fileName, count);
+                    if (result == "__NOT_FOUND__")
+                        return $"greska! fajl '{fileName}' nije pronadjen";
 
-            if (count == 0)
-                return $"fajl '{fileName}' ne sadrzi reci sa vise suglasnika nego samoglasnika";
+                    string[] parts = result.Split('|');
+                    string fullPath = parts[0];
+                    int count = int.Parse(parts[1]);
 
-            return $"fajl: {fileName}\nputanja: {fullPath}\nbroj reci: {count}";
+                    if (count == 0)
+                        return $"fajl '{fileName}' ne sadrzi reci sa vise suglasnika nego samoglasnika";
+
+                    return $"fajl: {fileName}\nputanja: {fullPath}\nbroj reci: {count}";
+                });
         }
 
         public void Stop()
