@@ -1,3 +1,7 @@
+Projekat - faza 1: https://github.com/steesiic/SistemskoProgramiranje
+
+Realizacija pomoću Task-ova.
+
 Zadatak 29:
 Kreirati Web server koji vrši brojanje reči u okviru fajla. Brojati samo reči koje imaju vise
 suglasnika nego samoglasnika. Svi zahtevi serveru se šalju preko browser-a korišćenjem GET
