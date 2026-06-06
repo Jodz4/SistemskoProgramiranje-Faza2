@@ -11,19 +11,21 @@ namespace WordCountServer
         static void Main(string[] args)
         {
             //folderi za primere i logove
-            //string rootFolder = @"D:\faks\TRECA GODINA\sistemsko programiranje\Projekat\WordCountFiles"; 
-            //string logFolder = @"D:\faks\TRECA GODINA\sistemsko programiranje\Projekat\Logs";
-            string rootFolder = @"C:\Users\Jetko\Desktop\FAKS\III godina\Sistemsko\SistemskoProgramiranje\WordCountFiles";
-            string logFolder = @"C:\Users\Jetko\Desktop\FAKS\III godina\Sistemsko\SistemskoProgramiranje\Logs";
+            string rootFolder = @"D:\faks\TRECA GODINA\sistemsko programiranje\Projekat\WordCountFiles"; 
+            string logFolder = @"D:\faks\TRECA GODINA\sistemsko programiranje\Projekat\Logs";
+            //string rootFolder = @"C:\Users\Jetko\Desktop\FAKS\III godina\Sistemsko\SistemskoProgramiranje\WordCountFiles";
+           //string logFolder = @"C:\Users\Jetko\Desktop\FAKS\III godina\Sistemsko\SistemskoProgramiranje\Logs";
 
             Logger.Init(logFolder);
             Logger.Info("Aplikacija pokrenuta.");
 
             Server server = new Server("http://localhost:5050/", rootFolder);
-            server.Start();
+            Task serverTask = Task.Run(() => server.Start());
 
-            Console.ReadLine();
+            Console.ReadLine(); //shutdown kad se pritisne ENTER
             server.Stop();
+
+            serverTask.Wait();
             Logger.Info("Aplikacija zaustavljena.");
         }
     }

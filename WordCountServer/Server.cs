@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
@@ -14,11 +15,9 @@ namespace WordCountServer
         private RequestQueue _requestQueue;
         private Cache _cache;
         private int _workerCount = 4;
-
-        // SemaphoreSlim kontrolise koliko taskova istovremeno obradjuje zahteve
-        // prvi parametar  = pocetni broj slobodnih mesta
-        // drugi parametar = maksimalni broj slobodnih mesta
         private SemaphoreSlim _semaphore;
+        private CancellationTokenSource _cts;
+        private List<Task> _workerTasks;
 
         public Server(string prefix, string rootFolder)
         {
@@ -28,9 +27,9 @@ namespace WordCountServer
             _fileSearcher = new FileSearcher(rootFolder);
             _requestQueue = new RequestQueue(10);
             _cache = new Cache(5);
-
-            // Maksimalno _workerCount taskova istovremeno
             _semaphore = new SemaphoreSlim(_workerCount, _workerCount);
+            _cts = new CancellationTokenSource();
+            _workerTasks = new List<Task>();
         }
 
         public void Start()
@@ -42,25 +41,54 @@ namespace WordCountServer
             for (int i = 0; i < _workerCount; i++)
             {
                 int workerId = i;
-                Task.Run(() => WorkerLoop(workerId));
+                Task t = Task.Run(() => WorkerLoop(workerId, _cts.Token));
+                _workerTasks.Add(t);
             }
 
             Logger.Info($"pokrenuto {_workerCount} worker taskova");
 
             while (_running)
             {
-                HttpListenerContext context = _listener.GetContext();
-                _requestQueue.Enqueue(context);
+                try
+                {
+                    HttpListenerContext context = _listener.GetContext();
+                    _requestQueue.Enqueue(context);
+                }
+                catch (HttpListenerException)
+                {
+                    break;
+                }
             }
         }
 
-        private async Task WorkerLoop(int workerId)
+        public void Stop()
+        {
+            Logger.Info("gasenje servera...");
+            _running = false;
+            _cts.Cancel();
+            _listener.Stop();
+            Logger.Info("cekam da worker taskovi zavrse...");
+            Task.WaitAll(_workerTasks.ToArray());
+            Logger.Info("svi worker taskovi zavrseni");
+        }
+
+        private async Task WorkerLoop(int workerId, CancellationToken token)
         {
             Logger.Info($"worker {workerId} spreman");
 
-            while (_running)
+            while (!token.IsCancellationRequested)
             {
-                HttpListenerContext context = _requestQueue.Dequeue();
+                HttpListenerContext context;
+
+                try
+                {
+                    context = _requestQueue.Dequeue(token);
+                }
+                catch (OperationCanceledException)
+                {
+                    Logger.Info($"worker {workerId} prima signal za gasenje");
+                    break;
+                }
 
                 string rawUrl = context.Request.Url.AbsolutePath;
                 string fileName = rawUrl.TrimStart('/');
@@ -72,58 +100,59 @@ namespace WordCountServer
                     continue;
                 }
 
-                // Cekamo dok se ne oslobodi mesto - neblokirajuce!
-                // WaitAsync oslobadja nit dok ceka, za razliku od Wait()
-                await _semaphore.WaitAsync();
+                await _semaphore.WaitAsync(token);
 
                 try
                 {
                     Logger.Info($"worker {workerId} obradjuje: {fileName}");
-
                     string response = await ProcessRequestAsync(fileName);
-
                     SendResponse(context, response);
                     Logger.Info($"worker {workerId} zavrsio: {fileName}");
                 }
+                catch (OperationCanceledException)
+                {
+                    Logger.Info($"worker {workerId} prekinut tokom obrade");
+                    break;
+                }
                 catch (Exception ex)
                 {
-                    Logger.Error($"worker {workerId} greska pri obradi '{fileName}': {ex.Message}");
-                    try
-                    {
-                        SendResponse(context, $"greska na serveru: {ex.Message}");
-                    }
-                    catch
-                    {
-                        // ako ni slanje odgovora ne uspe, nastavljamo dalje
-                    }
+                    Logger.Error($"worker {workerId} greska: {ex.Message}");
+                    try { SendResponse(context, $"greska na serveru: {ex.Message}"); }
+                    catch { }
                 }
                 finally
                 {
-                    // finally garantuje da se mesto UVEK oslobodi
-                    // cak i ako dodje do greske
                     _semaphore.Release();
                     Logger.Info($"worker {workerId} oslobodio semaphore");
                 }
             }
+
+            Logger.Info($"worker {workerId} ugasen");
         }
 
-        private Task<string> ProcessRequestAsync(string fileName)
+
+        private async Task<string> ProcessRequestAsync(string fileName)
         {
             if (string.IsNullOrWhiteSpace(fileName))
-                return Task.FromResult("greska! nije naveden naziv fajla");
+                return "greska! nije naveden naziv fajla";
 
-            if (_cache.TryGetOrReserve(fileName, out int cachedResult))
+            var (found, cachedResult) = await _cache.TryGetOrReserveAsync(fileName);
+
+            if (found)
             {
                 if (cachedResult == -1)
-                    return Task.FromResult($"greska! fajl '{fileName}' nije pronadjen");
+                    return $"greska! fajl '{fileName}' nije pronadjen";
                 if (cachedResult == 0)
-                    return Task.FromResult($"fajl '{fileName}' ne sadrzi reci sa vise suglasnika nego samoglasnika");
-                return Task.FromResult($"fajl: {fileName}\nbroj reci (iz kesa): {cachedResult}");
+                    return $"fajl '{fileName}' ne sadrzi reci sa vise suglasnika nego samoglasnika";
+                return $"fajl: {fileName}\nbroj reci (iz kesa): {cachedResult}";
             }
 
-            return _fileSearcher.FindFileAsync(fileName)
+            //await sa ContinueWith lancem za obradu fajla, await ceka na ceo lanac da zavrsi
+            return await _fileSearcher.FindFileAsync(fileName)
+
                 .ContinueWith(findTask =>
                 {
+                    //Thread.Sleep(3000); //odkomentarisi za testiranje
                     string fullPath = findTask.Result;
 
                     if (fullPath == null)
@@ -142,6 +171,7 @@ namespace WordCountServer
                         });
                 })
                 .Unwrap()
+
                 .ContinueWith(resultTask =>
                 {
                     string result = resultTask.Result;
@@ -160,20 +190,21 @@ namespace WordCountServer
                 });
         }
 
-        public void Stop()
-        {
-            _running = false;
-            _listener.Stop();
-        }
-
         private void SendResponse(HttpListenerContext context, string message)
         {
-            byte[] buffer = System.Text.Encoding.UTF8.GetBytes(message);
-            context.Response.ContentType = "text/plain; charset=utf-8";
-            context.Response.ContentLength64 = buffer.Length;
-            context.Response.StatusCode = 200;
-            context.Response.OutputStream.Write(buffer, 0, buffer.Length);
-            context.Response.OutputStream.Close();
+            try
+            {
+                byte[] buffer = System.Text.Encoding.UTF8.GetBytes(message);
+                context.Response.ContentType = "text/plain; charset=utf-8";
+                context.Response.ContentLength64 = buffer.Length;
+                context.Response.StatusCode = 200;
+                context.Response.OutputStream.Write(buffer, 0, buffer.Length);
+                context.Response.OutputStream.Close();
+            }
+            catch (ObjectDisposedException)
+            {
+                //listener je ugasen tokom slanja odgovora, ignorisemo
+            }
         }
     }
 }

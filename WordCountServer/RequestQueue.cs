@@ -34,13 +34,16 @@ namespace WordCountServer
             }
         }
 
-        public HttpListenerContext Dequeue()
+        public HttpListenerContext Dequeue(CancellationToken token)
         {
             lock (_lock)
             {
                 while (_queue.Count == 0)
                 {
-                    Monitor.Wait(_lock);
+                    if (token.IsCancellationRequested)
+                        throw new OperationCanceledException();
+
+                    Monitor.Wait(_lock, 500); //timeout od 500ms
                 }
 
                 HttpListenerContext context = _queue.Dequeue();

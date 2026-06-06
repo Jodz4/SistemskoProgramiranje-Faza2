@@ -1,6 +1,6 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Net;
+﻿using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace WordCountServer
 {
@@ -9,63 +9,83 @@ namespace WordCountServer
         private Dictionary<string, CacheEntry> _cache = new Dictionary<string, CacheEntry>();
         private LinkedList<string> _lruList = new LinkedList<string>();
         private int _maxSize;
-        private object _lock = new object();
+        private object _globalLock = new object(); //za pristup recniku i LRU listi
 
         public Cache(int maxSize)
         {
             _maxSize = maxSize;
         }
 
-        public bool TryGetOrReserve(string fileName, out int result)
+        public async Task<(bool found, int result)> TryGetOrReserveAsync(string fileName)
         {
-            lock (_lock)
-            {
-                if (_cache.TryGetValue(fileName, out CacheEntry entry))
-                {
-                    while (!entry.IsReady)
-                    {
-                        Logger.Cache($"'{fileName}' se vec obradjuje, sacekaj!");
-                        Monitor.Wait(_lock);
-                    }
+            CacheEntry entry;
+            bool isNewEntry = false;
 
-                    _lruList.Remove(fileName);
+            lock (_globalLock)
+            {
+                if (_cache.TryGetValue(fileName, out entry))
+                {
+                    //fajl postoji u kesu, izlazimo iz globalnog locka i cekamo na lock po fajlu ako je u obradi
+                    isNewEntry = false;
+                }
+                else
+                {
+                    //nije u kesu, rezervisemo slot odmah
+                    if (_cache.Count >= _maxSize)
+                        EvictLRU();
+
+                    entry = new CacheEntry(); // prazan placeholder
+                    _cache[fileName] = entry;
                     _lruList.AddLast(fileName);
 
-                    result = entry.Result;
-                    Logger.Cache($"pogodak za '{fileName}' = {result}");
-                    return true;
+                    // uzimamo Lock odmah dok smo u globalnom locku
+                    entry.Lock.Wait();
+
+                    Logger.Cache($"placeholder rezervisan za '{fileName}'");
+                    isNewEntry = true;
                 }
+            }
 
-                if (_cache.Count >= _maxSize)
-                    EvictLRU();
+            if (isNewEntry)
+                return (false, 0);
 
-                _cache[fileName] = new CacheEntry();
-                _lruList.AddLast(fileName);
-
-                result = 0;
-                return false;
+            //ovo je van globalnog locka, pa drugi taskovi mogu pristupati razlicitim fajlovima paralelno
+            await entry.Lock.WaitAsync();
+            try
+            {
+                lock (_globalLock)
+                {
+                    _lruList.Remove(fileName);
+                    _lruList.AddLast(fileName);
+                }
+                Logger.Cache($"pogodak za '{fileName}' = {entry.Result}");
+                return (true, entry.Result);
+            }
+            finally
+            {
+                entry.Lock.Release();
             }
         }
 
         public void Set(string fileName, int result)
         {
-            lock (_lock)
+            lock (_globalLock)
             {
                 if (_cache.ContainsKey(fileName))
                 {
                     _cache[fileName].Result = result;
                     _cache[fileName].IsReady = true;
+                    //oslobadjamo lock po fajlu, budi sve taskove koji cekaju na ovaj konkretan fajl
+                    _cache[fileName].Lock.Release();
+                    Logger.Cache($"rezultat sacuvan za '{fileName}' = {result}");
                 }
                 else
                 {
                     if (_cache.Count >= _maxSize)
                         EvictLRU();
-
                     _cache[fileName] = new CacheEntry(result);
                     _lruList.AddLast(fileName);
                 }
-
-                Monitor.PulseAll(_lock);
             }
         }
 
