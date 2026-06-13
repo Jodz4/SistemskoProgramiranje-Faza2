@@ -13,7 +13,6 @@ namespace WordCountServer
         //cuva po 1 SemaphoreSlim za svaki fajl
         //kljuc je putanja fajla, vrednost je lock za taj fajl
         private Dictionary<string, SemaphoreSlim> _fileLocks = new Dictionary<string, SemaphoreSlim>();
-
         private object _fileLocksLock = new object();
 
         public FileSearcher(string rootFolder)
@@ -28,23 +27,8 @@ namespace WordCountServer
             {
                 if (!_fileLocks.ContainsKey(fullPath))
                     _fileLocks[fullPath] = new SemaphoreSlim(1, 1);
-
                 return _fileLocks[fullPath];
             }
-        }
-
-        public string FindFile(string fileName)
-        {
-            string[] foundFiles = Directory.GetFiles(
-                _rootFolder,
-                fileName,
-                SearchOption.AllDirectories
-            );
-
-            if (foundFiles.Length == 0)
-                return null;
-
-            return foundFiles[0];
         }
 
         public Task<string> FindFileAsync(string fileName)
@@ -56,25 +40,17 @@ namespace WordCountServer
                     fileName,
                     SearchOption.AllDirectories
                 );
-
                 if (foundFiles.Length == 0)
                     return null;
-
                 return foundFiles[0];
             });
         }
 
-        public string ReadFile(string fullPath)
-        {
-            return File.ReadAllText(fullPath, Encoding.UTF8);
-        }
         public async Task<string> ReadFileAsync(string fullPath)
         {
             SemaphoreSlim fileLock = GetFileLock(fullPath);
 
-            
             await fileLock.WaitAsync(); //cekamo da se oslobodi lock za ovaj fajl
-
             try
             {
                 return await File.ReadAllTextAsync(fullPath, Encoding.UTF8);

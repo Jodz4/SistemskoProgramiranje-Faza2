@@ -1,9 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Net;
-using System.Text;
-using System.Threading.Tasks;
 using System.Threading;
 
 namespace WordCountServer
@@ -19,18 +16,19 @@ namespace WordCountServer
             _maxSize = maxSize;
         }
 
-        public void Enqueue(HttpListenerContext context)
+        public bool TryEnqueue(HttpListenerContext context)
         {
             lock (_lock)
             {
-                while (_queue.Count >= _maxSize)
+                if (_queue.Count >= _maxSize)
                 {
-                    Logger.Warning("red je pun, sacekaj!");
-                    Monitor.Wait(_lock);
+                    Logger.Warning("red je pun, odbijam zahtev (HTTP 503)");
+                    return false;
                 }
 
                 _queue.Enqueue(context);
                 Monitor.Pulse(_lock);
+                return true;
             }
         }
 
@@ -42,10 +40,8 @@ namespace WordCountServer
                 {
                     if (token.IsCancellationRequested)
                         throw new OperationCanceledException();
-
                     Monitor.Wait(_lock, 500); //timeout od 500ms
                 }
-
                 HttpListenerContext context = _queue.Dequeue();
                 Monitor.Pulse(_lock);
                 return context;

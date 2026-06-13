@@ -52,7 +52,14 @@ namespace WordCountServer
                 try
                 {
                     HttpListenerContext context = _listener.GetContext();
-                    _requestQueue.Enqueue(context);
+
+                    // TryEnqueue ne blokira - ako je red pun
+                    // Glavna petlja moze odmah da nastavi i primi sledeci zahtev
+                    if (!_requestQueue.TryEnqueue(context))
+                    {
+                        context.Response.StatusCode = 503; // Service Unavailable
+                        SendResponse(context, "greska! server je preopterecen, pokusajte ponovo");
+                    }
                 }
                 catch (HttpListenerException)
                 {
@@ -140,6 +147,7 @@ namespace WordCountServer
 
             if (found)
             {
+                //Thread.Sleep(3000);
                 if (cachedResult == -1)
                     return $"greska! fajl '{fileName}' nije pronadjen";
                 if (cachedResult == 0)
@@ -197,7 +205,6 @@ namespace WordCountServer
                 byte[] buffer = System.Text.Encoding.UTF8.GetBytes(message);
                 context.Response.ContentType = "text/plain; charset=utf-8";
                 context.Response.ContentLength64 = buffer.Length;
-                context.Response.StatusCode = 200;
                 context.Response.OutputStream.Write(buffer, 0, buffer.Length);
                 context.Response.OutputStream.Close();
             }
