@@ -32,7 +32,7 @@ namespace WordCountServer
             _workerTasks = new List<Task>();
         }
 
-        public void Start()
+        public async Task Start()
         {
             _listener.Start();
             _running = true;
@@ -51,10 +51,11 @@ namespace WordCountServer
             {
                 try
                 {
-                    HttpListenerContext context = _listener.GetContext();
+                    // GetContextAsync oslobadja  glavnu nit dok ceka na novi zahtev
+                    HttpListenerContext context = await _listener.GetContextAsync();
 
                     // TryEnqueue ne blokira - ako je red pun
-                    // Glavna petlja moze odmah da nastavi i primi sledeci zahtev
+                    // glavna petlja moze odmah da nastavi i primi sledeci zahtev
                     if (!_requestQueue.TryEnqueue(context))
                     {
                         context.Response.StatusCode = 503; // Service Unavailable
@@ -65,17 +66,26 @@ namespace WordCountServer
                 {
                     break;
                 }
+                catch (ObjectDisposedException)
+                {
+                    // listener je ugasen, izlazimo iz petlje
+                    break;
+                }
             }
         }
 
-        public void Stop()
+        // async Task omogucava await Task.WhenAll
+        public async Task Stop()
         {
             Logger.Info("gasenje servera...");
             _running = false;
             _cts.Cancel();
             _listener.Stop();
             Logger.Info("cekam da worker taskovi zavrse...");
-            Task.WaitAll(_workerTasks.ToArray());
+
+            // ne blokira nit dok ceka da svi workeri zavrse
+            await Task.WhenAll(_workerTasks.ToArray());
+
             Logger.Info("svi worker taskovi zavrseni");
         }
 
@@ -137,7 +147,6 @@ namespace WordCountServer
             Logger.Info($"worker {workerId} ugasen");
         }
 
-
         private async Task<string> ProcessRequestAsync(string fileName)
         {
             if (string.IsNullOrWhiteSpace(fileName))
@@ -147,7 +156,7 @@ namespace WordCountServer
 
             if (found)
             {
-                //Thread.Sleep(3000);
+                //Thread.Sleep(3000); //odkomentarisi za testiranje
                 if (cachedResult == -1)
                     return $"greska! fajl '{fileName}' nije pronadjen";
                 if (cachedResult == 0)
