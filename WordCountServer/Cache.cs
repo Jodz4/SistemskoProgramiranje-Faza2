@@ -25,7 +25,7 @@ namespace WordCountServer
             {
                 if (_cache.TryGetValue(fileName, out entry))
                 {
-                    //fajl postoji u kesu, izlazimo iz globalnog locka i cekamo na lock po fajlu ako je u obradi
+                    
                     isNewEntry = false;
                 }
                 else
@@ -38,7 +38,6 @@ namespace WordCountServer
                     _cache[fileName] = entry;
                     _lruList.AddLast(fileName);
 
-                    // uzimamo Lock odmah dok smo u globalnom locku
                     entry.Lock.Wait();
 
                     Logger.Cache($"placeholder rezervisan za '{fileName}'");

@@ -46,7 +46,7 @@ namespace WordCountServer
             });
         }
 
-        public async Task<string> ReadFileAsync(string fullPath)
+        public async Task<string> ReadFileAsync (string fullPath)
         {
             SemaphoreSlim fileLock = GetFileLock(fullPath);
 

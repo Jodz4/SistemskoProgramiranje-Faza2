@@ -51,14 +51,13 @@ namespace WordCountServer
             {
                 try
                 {
-                    // GetContextAsync oslobadja  glavnu nit dok ceka na novi zahtev
+                    //GetContextAsync oslobadja  glavnu nit dok ceka na novi zahtev
                     HttpListenerContext context = await _listener.GetContextAsync();
 
-                    // TryEnqueue ne blokira - ako je red pun
-                    // glavna petlja moze odmah da nastavi i primi sledeci zahtev
+                    //TryEnqueue ne blokira - ako je red pun
                     if (!_requestQueue.TryEnqueue(context))
                     {
-                        context.Response.StatusCode = 503; // Service Unavailable
+                        context.Response.StatusCode = 503;
                         SendResponse(context, "greska! server je preopterecen, pokusajte ponovo");
                     }
                 }
@@ -68,13 +67,12 @@ namespace WordCountServer
                 }
                 catch (ObjectDisposedException)
                 {
-                    // listener je ugasen, izlazimo iz petlje
+                    //listener je ugasen, izlazimo iz petlje
                     break;
                 }
             }
         }
 
-        // async Task omogucava await Task.WhenAll
         public async Task Stop()
         {
             Logger.Info("gasenje servera...");
@@ -156,7 +154,7 @@ namespace WordCountServer
 
             if (found)
             {
-                //Thread.Sleep(3000); //odkomentarisi za testiranje
+                //Thread.Sleep(3000); //odkomentarisi za testiranje (spora obrada kesa)
                 if (cachedResult == -1)
                     return $"greska! fajl '{fileName}' nije pronadjen";
                 if (cachedResult == 0)
@@ -169,7 +167,7 @@ namespace WordCountServer
 
                 .ContinueWith(findTask =>
                 {
-                    //Thread.Sleep(3000); //odkomentarisi za testiranje
+                    //Thread.Sleep(3000); //odkomentarisi za testiranje (spora obrada fajla)
                     string fullPath = findTask.Result;
 
                     if (fullPath == null)
